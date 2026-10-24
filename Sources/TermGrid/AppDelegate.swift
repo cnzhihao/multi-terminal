@@ -18,13 +18,15 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
         tiles.onChange = { [weak self] in self?.refreshBadge() }
         AX.setGlobalTimeout()
         watcher.start()
+        AutoGather.shared.restore()
 
-        // ⌃⌥F 所有终端置前，⌃⌥T 收纳/移出当前窗口，⌃⌥G 收纳全部终端，⌃⌥R 重新排列
+        // ⌃⌥F 所有终端置前，⌃⌥T 收纳/移出当前窗口，⌃⌥G 收纳全部终端，⌃⌥R 重新排列，⌃⌥A 自动收纳开关
         let mods = controlKey | optionKey
         HotKey.register(keyCode: kVK_ANSI_F, modifiers: mods) { [weak self] in self?.bringAllToFront() }
         HotKey.register(keyCode: kVK_ANSI_T, modifiers: mods) { [weak self] in self?.toggleFrontWindow() }
         HotKey.register(keyCode: kVK_ANSI_G, modifiers: mods) { [weak self] in self?.gatherAll() }
         HotKey.register(keyCode: kVK_ANSI_R, modifiers: mods) { [weak self] in self?.retile() }
+        HotKey.register(keyCode: kVK_ANSI_A, modifiers: mods) { [weak self] in self?.toggleAutoGather() }
 
         NotificationCenter.default.addObserver(forName: NSApplication.didChangeScreenParametersNotification,
                                                object: nil, queue: .main) { _ in
@@ -34,7 +36,11 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
         if !AX.isTrusted(prompt: true) {
             // 授权后自动生效，不用重启
             trustTimer = Timer.scheduledTimer(withTimeInterval: 1, repeats: true) { [weak self] t in
-                if AX.isTrusted(prompt: false) { t.invalidate(); self?.refreshBadge() }
+                if AX.isTrusted(prompt: false) {
+                    t.invalidate()
+                    AutoGather.shared.attachToRunningTerminals()
+                    self?.refreshBadge()
+                }
             }
         }
         refreshBadge()
@@ -47,6 +53,8 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
     private func refreshBadge() {
         let n = tiles.totalCount
         statusItem.button?.title = n > 0 ? " \(n)" : ""
+        let symbol = AutoGather.shared.isEnabled ? "square.grid.3x2.fill" : "square.grid.3x2"
+        statusItem.button?.image = NSImage(systemSymbolName: symbol, accessibilityDescription: "TermGrid")
     }
 
     // MARK: 菜单
@@ -90,6 +98,10 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
             aspectMenu.addItem(it)
         }
         menu.addItem(submenu("格子形状", aspectMenu))
+
+        let auto = item("自动收纳新开的终端", #selector(toggleAutoGather), key: "a")
+        auto.state = AutoGather.shared.isEnabled ? .on : .off
+        menu.addItem(auto)
 
         let any = item("允许收纳任意 App 的窗口", #selector(toggleAnyWindow))
         any.state = tiles.allowAnyWindow ? .on : .off
@@ -142,6 +154,11 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
 
     @objc private func toggleAnyWindow() { tiles.allowAnyWindow.toggle() }
 
+    @objc private func toggleAutoGather() {
+        AutoGather.shared.isEnabled.toggle()
+        refreshBadge()
+    }
+
     @objc private func openAXSettings() {
         _ = AX.isTrusted(prompt: true)
         NSWorkspace.shared.open(URL(string: "x-apple.systempreferences:com.apple.preference.security?Privacy_Accessibility")!)
@@ -156,12 +173,14 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
         • 已排列的窗口拖到另一个窗口上 → 两者交换位置；拖到别处 → 弹回原格子。
         • 多块屏幕各自独立排列，拖到哪块屏幕的收纳区就排在哪块屏幕上。
         • 关闭或最小化窗口后会自动重新排列。
+        • 打开“自动收纳新开的终端”后，新开的终端窗口会直接加入它所在屏幕的排列（菜单栏图标变成实心）。
 
         快捷键：
         ⌃⌥F  所有终端置前
         ⌃⌥G  收纳所有终端到当前屏幕
         ⌃⌥T  收纳 / 移出当前窗口
         ⌃⌥R  重新排列
+        ⌃⌥A  自动收纳新开的终端（开 / 关）
         """
         NSApp.activate(ignoringOtherApps: true)
         alert.runModal()

@@ -61,6 +61,15 @@ final class TileManager {
 
     func count(on d: CGDirectDisplayID) -> Int { groups[d]?.count ?? 0 }
 
+    /// 是否有已收纳的窗口和给定 frame 重合（用来识别原生标签页）
+    func hasManagedWindow(withFrame f: CGRect) -> Bool {
+        groups.values.joined().contains { w in
+            guard let g = w.frame else { return false }
+            return abs(g.minX - f.minX) < 2 && abs(g.minY - f.minY) < 2
+                && abs(g.width - f.width) < 2 && abs(g.height - f.height) < 2
+        }
+    }
+
     func accepts(_ w: WindowRef) -> Bool {
         if w.pid == ProcessInfo.processInfo.processIdentifier { return false }
         if isManaged(w) { return true }

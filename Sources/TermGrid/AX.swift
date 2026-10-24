@@ -51,6 +51,11 @@ enum AX {
     static func subrole(_ e: AXUIElement) -> String? { string(e, kAXSubroleAttribute) }
     static func isMinimized(_ e: AXUIElement) -> Bool { bool(e, kAXMinimizedAttribute) }
 
+    static func isResizable(_ e: AXUIElement) -> Bool {
+        var settable: DarwinBoolean = false
+        return AXUIElementIsAttributeSettable(e, kAXSizeAttribute as CFString, &settable) == .success && settable.boolValue
+    }
+
     /// 窗口是否还存在（关闭后会返回 invalidUIElement）
     static func isAlive(_ e: AXUIElement) -> Bool {
         var v: CFTypeRef?
