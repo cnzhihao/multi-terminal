@@ -1,5 +1,5 @@
 #!/bin/bash
-# 编译并打包成 build/TermGrid.app
+# 编译并打包成 build/TermGrid.app；加 --zip / --dmg 同时生成安装包
 set -euo pipefail
 cd "$(dirname "$0")"
 
@@ -38,9 +38,32 @@ PLIST
 codesign --force --sign - --identifier local.termgrid "$APP"
 echo "✅ 已生成 $APP"
 
-if [[ "${1:-}" == "--zip" ]]; then
-  ZIP="build/TermGrid-$VERSION.zip"
-  rm -f "$ZIP"
-  ditto -c -k --keepParent "$APP" "$ZIP"
-  echo "✅ 已生成 $ZIP"
-fi
+for arg in "$@"; do
+  case "$arg" in
+    --zip)
+      ZIP="build/TermGrid-$VERSION.zip"
+      rm -f "$ZIP"
+      ditto -c -k --keepParent "$APP" "$ZIP"
+      echo "✅ 已生成 $ZIP"
+      ;;
+    --dmg)
+      # 拖拽安装用的 dmg：里面放 TermGrid.app 和一个「应用程序」的快捷方式
+      DMG="build/TermGrid-$VERSION.dmg"
+      STAGE=$(mktemp -d)
+      cp -R "$APP" "$STAGE/"
+      ln -s /Applications "$STAGE/Applications"
+      cp Resources/AppIcon.icns "$STAGE/.VolumeIcon.icns"
+      # 先做可写镜像，挂载后打上"自定义图标"标记（-srcfolder 不会保留根目录属性），再压缩
+      RW="$STAGE.rw.dmg"
+      hdiutil create -volname "TermGrid" -srcfolder "$STAGE" -fs HFS+ -format UDRW -ov "$RW" >/dev/null
+      MNT=$(mktemp -d)
+      hdiutil attach "$RW" -nobrowse -mountpoint "$MNT" >/dev/null
+      SetFile -a C "$MNT"
+      hdiutil detach "$MNT" >/dev/null
+      rm -f "$DMG"
+      hdiutil convert "$RW" -format UDZO -o "$DMG" >/dev/null
+      rm -rf "$STAGE" "$RW" "$MNT"
+      echo "✅ 已生成 $DMG"
+      ;;
+  esac
+done

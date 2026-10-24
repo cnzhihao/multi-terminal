@@ -6,7 +6,7 @@
 
 ## 安装
 
-1. 到 [Releases](../../releases/latest) 下载 `TermGrid-x.y.z.zip`，解压后把 `TermGrid.app` 拖进「应用程序」。
+1. 到 [Releases](../../releases/latest) 下载 `TermGrid-x.y.z.dmg`，打开后把 `TermGrid` 拖到「Applications」。（也提供 zip。）
 2. 这个 App 没有经过 Apple 公证，第一次打开会被拦下。在终端里执行一次：
 
    ```bash
@@ -45,7 +45,7 @@
 
 ```bash
 ./build.sh                         # 生成 build/TermGrid.app
-VERSION=0.2.0 ./build.sh --zip     # 同时打包 build/TermGrid-0.2.0.zip
+VERSION=0.2.0 ./build.sh --zip --dmg   # 同时打包 build/TermGrid-0.2.0.zip 和 .dmg
 scripts/make-icns.sh               # 修改 scripts/make-icon.swift 后重新生成图标
 ```
 
