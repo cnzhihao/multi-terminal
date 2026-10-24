@@ -9,10 +9,12 @@ final class WindowEvents {
     var onChange: (() -> Void)?
     /// 新建了窗口
     var onWindowCreated: ((AXUIElement) -> Void)?
+    /// App 内的焦点窗口变了
+    var onFocusChanged: ((AXUIElement) -> Void)?
 
     private var observers: [pid_t: AXObserver] = [:]
 
-    private static let appNotifications = [kAXWindowCreatedNotification]
+    private static let appNotifications = [kAXWindowCreatedNotification, kAXFocusedWindowChangedNotification]
     private static let windowNotifications = [
         kAXUIElementDestroyedNotification,
         kAXWindowMiniaturizedNotification,
@@ -35,6 +37,11 @@ final class WindowEvents {
         var obs: AXObserver?
         let callback: AXObserverCallback = { _, element, notification, _ in
             let events = WindowEvents.shared
+            // 焦点切换不影响窗口数量，不用触发重排检查
+            if notification as String == kAXFocusedWindowChangedNotification {
+                events.onFocusChanged?(element)
+                return
+            }
             if notification as String == kAXWindowCreatedNotification {
                 events.onWindowCreated?(element)
             }
