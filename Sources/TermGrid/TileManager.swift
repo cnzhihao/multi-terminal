@@ -24,9 +24,16 @@ final class TileManager {
     private(set) var groups: [CGDirectDisplayID: [WindowRef]] = [:]
     /// 上次排列时每个窗口所在的格子（AX 坐标），用于拖动换位
     private var slots: [CGDirectDisplayID: [(WindowRef, CGRect)]] = [:]
-    private var pruneTimer: Timer?
 
     var onChange: (() -> Void)?
+
+    private init() {
+        // 窗口关闭/新建/最小化/焦点切换时检查一次；切换桌面等动画结束再检查
+        WindowEvents.shared.onChange = { [weak self] in self?.scheduleReconcile(after: 0.3) }
+        NSWorkspace.shared.notificationCenter.addObserver(
+            forName: NSWorkspace.activeSpaceDidChangeNotification, object: nil, queue: .main
+        ) { [weak self] _ in self?.scheduleReconcile(after: 0.6) }
+    }
 
     // MARK: 设置
 
@@ -87,7 +94,7 @@ final class TileManager {
         groups[d] = list
         if let old, old != d { retile(old) }
         retile(d)
-        startPruning()
+        WindowEvents.shared.watch(window: w)
         onChange?()
     }
 
@@ -140,11 +147,11 @@ final class TileManager {
                     w.originalFrame = w.frame
                 }
                 list.append(w)
+                WindowEvents.shared.watch(window: w)
             }
         }
         groups[d] = list
         retileAll()
-        startPruning()
         onChange?()
     }
 
@@ -238,32 +245,27 @@ final class TileManager {
         for (w, f) in zip(visible, frames) { AX.setFrame(w.element, f) }
         slots[d] = Array(zip(visible, frames))
         lastSignature[d] = signature(visible)
-        pendingSignature[d] = nil
     }
 
-    // MARK: 自动补位：窗口关闭/最小化/恢复时重新排列
+    // MARK: 自动补位：窗口数量变化时重排一次（事件触发，不轮询）
 
     private var lastSignature: [CGDirectDisplayID: [Int]] = [:]
-    /// 检测到变化后先记下来，下一次检查仍然一样才重排，避免切桌面动画之类的瞬间状态引起抖动
-    private var pendingSignature: [CGDirectDisplayID: [Int]] = [:]
-    private var lastOnscreenIDs: Set<CGWindowID> = []
-    private var tick = 0
+    private var pendingReconcile: DispatchWorkItem?
 
     private func signature(_ list: [WindowRef]) -> [Int] { list.map { $0.hashValue } }
 
-    private func startPruning() {
-        guard pruneTimer == nil else { return }
-        pruneTimer = Timer.scheduledTimer(withTimeInterval: 0.15, repeats: true) { [weak self] _ in self?.prune() }
+    /// 事件常常一次来好几个（关窗口 = 销毁 + 焦点切换），合并成一次检查；
+    /// 稍等一下是为了让关窗口的淡出动画先结束
+    private func scheduleReconcile(after delay: TimeInterval) {
+        guard !groups.isEmpty else { return }
+        pendingReconcile?.cancel()
+        let work = DispatchWorkItem { [weak self] in self?.reconcile() }
+        pendingReconcile = work
+        DispatchQueue.main.asyncAfter(deadline: .now() + delay, execute: work)
     }
 
-    private func prune() {
+    private func reconcile() {
         let onscreen = OnScreen.snapshot()
-        let ids = Set(onscreen.windows.keys)
-        tick += 1
-        // 屏幕上的窗口没变化时直接跳过（每 2 秒兜底检查一次），省掉跨进程调用
-        guard ids != lastOnscreenIDs || !pendingSignature.isEmpty || tick % 13 == 0 else { return }
-        lastOnscreenIDs = ids
-
         var membershipChanged = false
         for (d, original) in groups {
             var list = original
@@ -278,14 +280,9 @@ final class TileManager {
                 // 其余情况（最小化、可撤销关闭、在别的桌面）留在组里，只是暂时不占格子
             }
             groups[d] = list
-
-            let sig = signature(list.filter { onscreen.isVisible($0) })
-            if sig == lastSignature[d] {
-                pendingSignature[d] = nil
-            } else if pendingSignature[d] == sig {
+            // 可见窗口有增减才重排
+            if signature(list.filter { onscreen.isVisible($0) }) != lastSignature[d] {
                 retile(d, onscreen)
-            } else {
-                pendingSignature[d] = sig
             }
         }
         groups = groups.filter { !$0.value.isEmpty }
@@ -304,6 +301,7 @@ final class TileManager {
         let tab = WindowRef(el)
         guard !isManaged(tab) else { return nil }
         tab.originalFrame = w.originalFrame
+        WindowEvents.shared.watch(window: tab)
         return tab
     }
 
