@@ -63,11 +63,7 @@ final class TileManager {
 
     /// 是否有已收纳的窗口和给定 frame 重合（用来识别原生标签页）
     func hasManagedWindow(withFrame f: CGRect) -> Bool {
-        groups.values.joined().contains { w in
-            guard let g = w.frame else { return false }
-            return abs(g.minX - f.minX) < 2 && abs(g.minY - f.minY) < 2
-                && abs(g.width - f.width) < 2 && abs(g.height - f.height) < 2
-        }
+        groups.values.joined().contains { $0.frame?.isClose(to: f) == true }
     }
 
     func accepts(_ w: WindowRef) -> Bool {
@@ -228,42 +224,87 @@ final class TileManager {
     // MARK: 排列
 
     func retileAll() {
-        for d in groups.keys { retile(d) }
+        let onscreen = OnScreen.snapshot()
+        for d in groups.keys { retile(d, onscreen) }
     }
 
-    func retile(_ d: CGDirectDisplayID) {
+    func retile(_ d: CGDirectDisplayID) { retile(d, OnScreen.snapshot()) }
+
+    /// 只给屏幕上看得见的窗口分格子；关掉/最小化/藏起来的不占位
+    private func retile(_ d: CGDirectDisplayID, _ onscreen: OnScreen) {
         guard let screen = NSScreen.with(displayID: d) ?? NSScreen.main else { return }
-        let visible = (groups[d] ?? []).filter { AX.isAlive($0.element) && !AX.isMinimized($0.element) }
+        let visible = (groups[d] ?? []).filter { onscreen.isVisible($0) }
         let frames = GridLayout.frames(count: visible.count, in: screen.axVisibleFrame, gap: gap, aspect: aspect)
         for (w, f) in zip(visible, frames) { AX.setFrame(w.element, f) }
         slots[d] = Array(zip(visible, frames))
         lastSignature[d] = signature(visible)
+        pendingSignature[d] = nil
     }
 
-    // MARK: 自动清理：窗口关闭/最小化/恢复时重新排列
+    // MARK: 自动补位：窗口关闭/最小化/恢复时重新排列
 
     private var lastSignature: [CGDirectDisplayID: [Int]] = [:]
+    /// 检测到变化后先记下来，下一次检查仍然一样才重排，避免切桌面动画之类的瞬间状态引起抖动
+    private var pendingSignature: [CGDirectDisplayID: [Int]] = [:]
+    private var lastOnscreenIDs: Set<CGWindowID> = []
+    private var tick = 0
 
     private func signature(_ list: [WindowRef]) -> [Int] { list.map { $0.hashValue } }
 
     private func startPruning() {
         guard pruneTimer == nil else { return }
-        pruneTimer = Timer.scheduledTimer(withTimeInterval: 1.0, repeats: true) { [weak self] _ in self?.prune() }
+        pruneTimer = Timer.scheduledTimer(withTimeInterval: 0.15, repeats: true) { [weak self] _ in self?.prune() }
     }
 
     private func prune() {
-        var changed = false
-        for (d, list) in groups {
-            let alive = list.filter { AX.isAlive($0.element) }
-            if alive.count != list.count {
-                groups[d] = alive
-                changed = true
+        let onscreen = OnScreen.snapshot()
+        let ids = Set(onscreen.windows.keys)
+        tick += 1
+        // 屏幕上的窗口没变化时直接跳过（每 2 秒兜底检查一次），省掉跨进程调用
+        guard ids != lastOnscreenIDs || !pendingSignature.isEmpty || tick % 13 == 0 else { return }
+        lastOnscreenIDs = ids
+
+        var membershipChanged = false
+        for (d, original) in groups {
+            var list = original
+            for i in list.indices.reversed() where !onscreen.isVisible(list[i]) {
+                if let tab = siblingTab(replacing: list[i], on: d, onscreen) {
+                    list[i] = tab
+                    membershipChanged = true
+                } else if !AX.isAlive(list[i].element) {
+                    list.remove(at: i)
+                    membershipChanged = true
+                }
+                // 其余情况（最小化、可撤销关闭、在别的桌面）留在组里，只是暂时不占格子
             }
-            let visible = alive.filter { !AX.isMinimized($0.element) }
-            if signature(visible) != lastSignature[d] { retile(d) }
+            groups[d] = list
+
+            let sig = signature(list.filter { onscreen.isVisible($0) })
+            if sig == lastSignature[d] {
+                pendingSignature[d] = nil
+            } else if pendingSignature[d] == sig {
+                retile(d, onscreen)
+            } else {
+                pendingSignature[d] = sig
+            }
         }
         groups = groups.filter { !$0.value.isEmpty }
-        if changed { onChange?() }
+        if membershipChanged { onChange?() }
+    }
+
+    /// 系统原生标签页（Terminal、Ghostty）：切换或关闭标签时，原来那格的窗口会被
+    /// 同一 App 的另一个窗口顶替，位置大小完全一样。找到它就原地接替，不让格子空出来。
+    private func siblingTab(replacing w: WindowRef, on d: CGDirectDisplayID, _ onscreen: OnScreen) -> WindowRef? {
+        guard let slot = slots[d]?.first(where: { $0.0 == w })?.1 else { return nil }
+        let last = w.frame
+        guard let id = onscreen.windows.first(where: { _, info in
+            info.pid == w.pid && (info.bounds.isClose(to: slot) || last.map { info.bounds.isClose(to: $0) } == true)
+        })?.key else { return nil }
+        guard let el = AX.windows(pid: w.pid).first(where: { AX.windowID($0) == id }) else { return nil }
+        let tab = WindowRef(el)
+        guard !isManaged(tab) else { return nil }
+        tab.originalFrame = w.originalFrame
+        return tab
     }
 
     /// 屏幕插拔后：消失的屏幕上的窗口挪到主屏
