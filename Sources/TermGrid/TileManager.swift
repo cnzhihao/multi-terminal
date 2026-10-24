@@ -28,11 +28,8 @@ final class TileManager {
     var onChange: (() -> Void)?
 
     private init() {
-        // 窗口关闭/新建/最小化/焦点切换时检查一次；切换桌面等动画结束再检查
-        WindowEvents.shared.onChange = { [weak self] in self?.scheduleReconcile(after: 0.3) }
-        NSWorkspace.shared.notificationCenter.addObserver(
-            forName: NSWorkspace.activeSpaceDidChangeNotification, object: nil, queue: .main
-        ) { [weak self] _ in self?.scheduleReconcile(after: 0.6) }
+        // 只在窗口新建/关闭/最小化/恢复时检查一次
+        WindowEvents.shared.onChange = { [weak self] in self?.scheduleReconcile() }
     }
 
     // MARK: 设置
@@ -231,16 +228,13 @@ final class TileManager {
     // MARK: 排列
 
     func retileAll() {
-        let onscreen = OnScreen.snapshot()
-        for d in groups.keys { retile(d, onscreen) }
+        for d in groups.keys { retile(d) }
     }
 
-    func retile(_ d: CGDirectDisplayID) { retile(d, OnScreen.snapshot()) }
-
-    /// 只给屏幕上看得见的窗口分格子；关掉/最小化/藏起来的不占位
-    private func retile(_ d: CGDirectDisplayID, _ onscreen: OnScreen) {
+    /// 最小化的窗口不占格子
+    func retile(_ d: CGDirectDisplayID) {
         guard let screen = NSScreen.with(displayID: d) ?? NSScreen.main else { return }
-        let visible = (groups[d] ?? []).filter { onscreen.isVisible($0) }
+        let visible = (groups[d] ?? []).filter { AX.isAlive($0.element) && !AX.isMinimized($0.element) }
         let frames = GridLayout.frames(count: visible.count, in: screen.axVisibleFrame, gap: gap, aspect: aspect)
         for (w, f) in zip(visible, frames) { AX.setFrame(w.element, f) }
         slots[d] = Array(zip(visible, frames))
@@ -254,50 +248,42 @@ final class TileManager {
 
     private func signature(_ list: [WindowRef]) -> [Int] { list.map { $0.hashValue } }
 
-    /// 事件常常一次来好几个（关窗口 = 销毁 + 焦点切换），合并成一次检查；
-    /// 稍等一下是为了让关窗口的淡出动画先结束
-    private func scheduleReconcile(after delay: TimeInterval) {
+    /// 事件常常一次来好几个，合并成一次检查
+    private func scheduleReconcile() {
         guard !groups.isEmpty else { return }
         pendingReconcile?.cancel()
         let work = DispatchWorkItem { [weak self] in self?.reconcile() }
         pendingReconcile = work
-        DispatchQueue.main.asyncAfter(deadline: .now() + delay, execute: work)
+        DispatchQueue.main.asyncAfter(deadline: .now() + 0.2, execute: work)
     }
 
     private func reconcile() {
-        let onscreen = OnScreen.snapshot()
         var membershipChanged = false
         for (d, original) in groups {
             var list = original
-            for i in list.indices.reversed() where !onscreen.isVisible(list[i]) {
-                if let tab = siblingTab(replacing: list[i], on: d, onscreen) {
+            for i in list.indices.reversed() where !AX.isAlive(list[i].element) {
+                if let tab = siblingTab(replacing: list[i], on: d) {
                     list[i] = tab
-                    membershipChanged = true
-                } else if !AX.isAlive(list[i].element) {
+                } else {
                     list.remove(at: i)
-                    membershipChanged = true
                 }
-                // 其余情况（最小化、可撤销关闭、在别的桌面）留在组里，只是暂时不占格子
+                membershipChanged = true
             }
             groups[d] = list
-            // 可见窗口有增减才重排
-            if signature(list.filter { onscreen.isVisible($0) }) != lastSignature[d] {
-                retile(d, onscreen)
+            // 占格子的窗口数量有变化才重排
+            if signature(list.filter { !AX.isMinimized($0.element) }) != lastSignature[d] {
+                retile(d)
             }
         }
         groups = groups.filter { !$0.value.isEmpty }
         if membershipChanged { onChange?() }
     }
 
-    /// 系统原生标签页（Terminal、Ghostty）：切换或关闭标签时，原来那格的窗口会被
-    /// 同一 App 的另一个窗口顶替，位置大小完全一样。找到它就原地接替，不让格子空出来。
-    private func siblingTab(replacing w: WindowRef, on d: CGDirectDisplayID, _ onscreen: OnScreen) -> WindowRef? {
+    /// 系统原生标签页（Terminal、Ghostty）：关掉当前标签时，同一位置会露出同一 App 的
+    /// 另一个标签窗口，位置大小完全一样。找到它就原地接替，不让格子空出来。
+    private func siblingTab(replacing w: WindowRef, on d: CGDirectDisplayID) -> WindowRef? {
         guard let slot = slots[d]?.first(where: { $0.0 == w })?.1 else { return nil }
-        let last = w.frame
-        guard let id = onscreen.windows.first(where: { _, info in
-            info.pid == w.pid && (info.bounds.isClose(to: slot) || last.map { info.bounds.isClose(to: $0) } == true)
-        })?.key else { return nil }
-        guard let el = AX.windows(pid: w.pid).first(where: { AX.windowID($0) == id }) else { return nil }
+        guard let el = AX.windows(pid: w.pid).first(where: { AX.frame($0)?.isClose(to: slot) == true }) else { return nil }
         let tab = WindowRef(el)
         guard !isManaged(tab) else { return nil }
         tab.originalFrame = w.originalFrame

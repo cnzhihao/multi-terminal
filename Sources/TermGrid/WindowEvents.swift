@@ -1,23 +1,18 @@
 import AppKit
 
 /// 事件驱动的窗口变化监听（代替轮询）：给 App 挂 AXObserver，
-/// 窗口新建/关闭/最小化/焦点切换/App 隐藏时回调，平时不占任何资源。
+/// 只在窗口新建/关闭/最小化/恢复时回调，平时不占任何资源。
 final class WindowEvents {
     static let shared = WindowEvents()
 
-    /// 某个 App 的窗口可能增减了（关闭、最小化、焦点变化等）
+    /// 某个 App 的窗口数量可能变了（新建、关闭、最小化、恢复）
     var onChange: (() -> Void)?
     /// 新建了窗口
     var onWindowCreated: ((AXUIElement) -> Void)?
 
     private var observers: [pid_t: AXObserver] = [:]
 
-    private static let appNotifications = [
-        kAXWindowCreatedNotification,
-        kAXFocusedWindowChangedNotification,   // Ghostty 等"可撤销关闭"只是把窗口藏起来，但焦点一定会变
-        kAXApplicationHiddenNotification,
-        kAXApplicationShownNotification,
-    ]
+    private static let appNotifications = [kAXWindowCreatedNotification]
     private static let windowNotifications = [
         kAXUIElementDestroyedNotification,
         kAXWindowMiniaturizedNotification,

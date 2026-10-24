@@ -18,9 +18,6 @@ final class WindowRef: Hashable {
     static func == (a: WindowRef, b: WindowRef) -> Bool { CFEqual(a.element, b.element) }
     func hash(into h: inout Hasher) { h.combine(CFHash(element)) }
 
-    /// 窗口服务器里的窗口编号，用来和 CGWindowList 对应
-    lazy var windowID: CGWindowID? = AX.windowID(element)
-
     var bundleID: String? { NSRunningApplication(processIdentifier: pid)?.bundleIdentifier }
     var frame: CGRect? { AX.frame(element) }
 }
@@ -45,11 +42,6 @@ enum AX {
     private static func element(_ v: CFTypeRef?) -> AXUIElement? {
         guard let v, CFGetTypeID(v) == AXUIElementGetTypeID() else { return nil }
         return (v as! AXUIElement)
-    }
-
-    static func windowID(_ e: AXUIElement) -> CGWindowID? {
-        var id: CGWindowID = 0
-        return _AXUIElementGetWindow(e, &id) == .success && id != 0 ? id : nil
     }
 
     static func string(_ e: AXUIElement, _ name: String) -> String? { copy(e, name) as? String }
@@ -120,37 +112,6 @@ enum AX {
     static func activate(pid: pid_t) {
         NSRunningApplication(processIdentifier: pid)?.activate(options: [.activateAllWindows])
         AXUIElementSetAttributeValue(AXUIElementCreateApplication(pid), kAXFrontmostAttribute as CFString, kCFBooleanTrue)
-    }
-}
-
-/// 私有但稳定的 API（Rectangle、yabai 等都在用）：AX 窗口 -> CGWindowID
-@_silgen_name("_AXUIElementGetWindow")
-private func _AXUIElementGetWindow(_ element: AXUIElement, _ id: UnsafeMutablePointer<CGWindowID>) -> AXError
-
-/// 某一时刻真正显示在屏幕上的窗口。
-/// 关掉的（包括 Ghostty 这类"可撤销关闭"时只是藏起来的）、最小化的、所在 App 被隐藏的、
-/// 在别的桌面上的窗口都不在里面——这些窗口都不该占格子。
-struct OnScreen {
-    struct Info { let pid: pid_t; let bounds: CGRect }
-    let windows: [CGWindowID: Info]
-
-    static func snapshot() -> OnScreen {
-        let list = CGWindowListCopyWindowInfo([.optionOnScreenOnly, .excludeDesktopElements], kCGNullWindowID)
-            as? [[String: Any]] ?? []
-        var windows: [CGWindowID: Info] = [:]
-        for w in list where (w[kCGWindowLayer as String] as? Int) == 0 {
-            guard let id = w[kCGWindowNumber as String] as? CGWindowID,
-                  let pid = w[kCGWindowOwnerPID as String] as? pid_t,
-                  let b = w[kCGWindowBounds as String] as? NSDictionary,
-                  let bounds = CGRect(dictionaryRepresentation: b) else { continue }
-            windows[id] = Info(pid: pid, bounds: bounds)
-        }
-        return OnScreen(windows: windows)
-    }
-
-    func isVisible(_ w: WindowRef) -> Bool {
-        guard let id = w.windowID else { return AX.isAlive(w.element) && !AX.isMinimized(w.element) }
-        return windows[id] != nil
     }
 }
 
